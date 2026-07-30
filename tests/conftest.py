@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
@@ -115,8 +116,17 @@ def make_export(
 
 @pytest.fixture
 def real_export() -> Path:
-    """A real PipePipe database, if one happens to be lying around."""
-    path = Path("/home/cuso4d/empty/newpipe.db")
+    """A real PipePipe export, if `CPI_TEST_PIPEPIPE_EXPORT` points at one.
+
+    Tests using this may only assert invariants that hold for *any* export — never
+    counts from one particular database. Real exports are personal data and stay
+    out of the repo, so a hardcoded path would mean the test never runs for anyone
+    else, and a hardcoded count would fail for them if it did.
+    """
+    env = os.environ.get("CPI_TEST_PIPEPIPE_EXPORT")
+    if not env:
+        pytest.skip("set CPI_TEST_PIPEPIPE_EXPORT to run against a real export")
+    path = Path(env).expanduser()
     if not path.exists():
-        pytest.skip("no real export available")
+        pytest.fail(f"CPI_TEST_PIPEPIPE_EXPORT points at a missing file: {path}")
     return path

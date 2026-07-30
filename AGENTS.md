@@ -41,5 +41,16 @@ accumulates across snapshots.
 the pre-commit hook.
 
 Verify parsing claims against a real export rather than documentation; upstream
-wikis for these apps are thin and often wrong. Prefer tests that assert the shape
-of real data, so a schema change upstream fails loudly.
+wikis for these apps are thin and often wrong.
+
+## Tests
+
+Real exports are personal data and never enter the repo. Tests build fixtures with
+`conftest.make_export`, using schema copied verbatim from a real database.
+
+A test may also opt into a real export via the `real_export` fixture, pointed at by
+`CPI_TEST_PIPEPIPE_EXPORT`; it skips when unset. Such tests may only assert
+invariants that hold for **any** export — uniqueness, ordering, subset relations
+between tables. Never assert a count from one particular database: those numbers
+say nothing about the code, break for anyone else, and quietly leak how much of
+what someone watched.

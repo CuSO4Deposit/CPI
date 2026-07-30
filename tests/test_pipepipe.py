@@ -288,43 +288,34 @@ def test_remote_playlists_from_latest_snapshot(tmp_path: Path) -> None:
     assert playlist.service is Service.YOUTUBE
 
 
-def test_real_export_matches_known_shape(real_export: Path) -> None:
-    st = parser.stats(real_export)
-    assert st["_user_version"] == 901
-    assert st["streams"] == 3634
-    assert st["stream_history"] == 3234
+def test_real_export_upholds_the_row_per_video_assumption(real_export: Path) -> None:
+    """The one thing about upstream that this module is not free to be wrong about.
 
+    `watched()` treats a history row as "last watch + total count" rather than a
+    single view. If a release ever starts appending a row per play, that reading
+    silently understates everything, so assert it against whatever real export is
+    available.
+    """
     records = list(parser.watched(real_export))
-    assert len(records) == 3234
-    # One row per stream: the app overwrites access_date instead of appending.
+    if not records:
+        pytest.skip("export has no watch history")
+
     assert len({r.stream.key for r in records}) == len(records)
-    assert max(r.repeat_count for r in records) == 3543
     assert records == sorted(records, key=lambda r: r.last_watched_ms)
-    assert {r.stream.service_id for r in records} <= {0, 5, 6}
+    assert all(r.repeat_count >= 0 for r in records)
 
 
-def test_real_export_reaches_streams_history_cannot(real_export: Path) -> None:
-    """400 of these videos have no history row, so watched() never sees them."""
-    all_streams = list(parser.streams(real_export))
-    assert len(all_streams) == 3634
-    assert len({s.key for s in all_streams}) == len(all_streams)
+def test_real_export_is_internally_consistent(real_export: Path) -> None:
+    """Cross-table invariants, on whatever export is at hand."""
+    streams = list(parser.streams(real_export))
+    stream_keys = {s.key for s in streams}
+    assert len(stream_keys) == len(streams)  # (service_id, url) is unique
 
-    watched_keys = {r.stream.key for r in parser.watched(real_export)}
-    assert len({s.key for s in all_streams} - watched_keys) == 400
+    # Everything reachable another way is a stream; history is a subset of it.
+    assert {r.stream.key for r in parser.watched(real_export)} <= stream_keys
+    assert {e.stream.key for e in parser.feed(real_export)} <= stream_keys
+    assert {e.stream.key for e in parser.playlist_entries(real_export)} <= stream_keys
 
-    feed_entries = list(parser.feed(real_export))
-    assert len(feed_entries) == 293
-    assert len({e.subscription.key for e in feed_entries}) == 26
-
-    playlists = list(parser.remote_playlists(real_export))
-    assert len(playlists) == 12
-    assert all(p.stream_count is not None for p in playlists)
-
-
-def test_real_export_has_live_streams_without_duration(real_export: Path) -> None:
-    """31 records where `duration_s` is a placeholder, 2 of them negative."""
-    records = list(parser.watched(real_export))
-    unknown = [r for r in records if r.stream.duration is None]
-    assert len(unknown) == 31
-    assert {r.stream.stream_type for r in unknown} == {"LIVE_STREAM"}
-    assert sorted({r.stream.duration_s for r in unknown}) == [-1, 0]
+    # A placeholder duration must never surface as a real length.
+    for s in streams:
+        assert (s.duration is None) == (s.duration_s <= 0)
