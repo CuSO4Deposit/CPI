@@ -1,0 +1,37 @@
+[project]
+name = "cpi"
+version = "0.1.0"
+description = "cuso4d's personal infrastructure: a typed access layer over personal data exports"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+# Pulled in only when actually needed; the core stays dependency-free.
+cache = ["cachew>=0.15.20231019"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "cuso4d"
+module-root = "src"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# Exports are dirty; we want the strictness on our own logic, not on stubs we lack.
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
