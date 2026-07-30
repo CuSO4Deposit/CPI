@@ -94,8 +94,19 @@ class WatchRecord:
     last_watched_ms: int
     repeat_count: int
     progress_ms: int | None
+
     snapshot: str
-    """Filename of the export this was read from, for provenance."""
+    """Filename of the export this was read from."""
+
+    schema_version: int
+    """The export's Room `user_version`, e.g. 901.
+
+    Provenance only — deliberately not used to decide how to parse anything. The
+    assumption that matters here (one history row per video) lives in
+    `onViewed()`, not in the schema, so it can change without this number moving,
+    and this number can move for migrations that don't affect us. Feature-detect
+    columns with `PRAGMA table_info` when they start drifting.
+    """
 
     @cached_property
     def last_watched(self) -> datetime:
@@ -123,6 +134,7 @@ class Search:
     query: str
     when_ms: int
     snapshot: str
+    schema_version: int
 
     @cached_property
     def when(self) -> datetime:
@@ -141,6 +153,7 @@ class Subscription:
     avatar_url: str | None
     subscriber_count: int | None
     snapshot: str
+    schema_version: int
 
     @property
     def key(self) -> tuple[int, str]:
@@ -155,3 +168,4 @@ class PlaylistEntry:
     index: int
     stream: Stream
     snapshot: str
+    schema_version: int

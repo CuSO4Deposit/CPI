@@ -31,6 +31,7 @@ def test_parses_a_snapshot(tmp_path: Path) -> None:
     assert rec.progress_ratio == 0.5
     assert not rec.marked_only
     assert rec.snapshot == "pipepipe-20260101T000000Z.db"
+    assert rec.schema_version == 901
 
     (search,) = list(parser.searches(db))
     assert search.query == "python asyncio"
@@ -157,6 +158,25 @@ def test_watched_deduplicates_an_unchanged_record(tmp_path: Path) -> None:
 
     assert len(list(pipepipe.watched(tmp_path))) == 1
     assert len(list(pipepipe.watched_snapshots(tmp_path))) == 2
+
+
+def test_records_carry_their_snapshot_version(tmp_path: Path) -> None:
+    """Provenance travels with each record, so an odd row can be traced back."""
+    make_export(
+        tmp_path / "PipePipeData-20240401_000000.db",
+        streams=[(1, 5, "https://b.tv/BV1", "t", 60)],
+        history=[(1, MAR, 1)],
+        user_version=901,
+    )
+    make_export(
+        tmp_path / "PipePipeData-20260728_000000.db",
+        streams=[(1, 5, "https://b.tv/BV1", "t", 60)],
+        history=[(1, JUL, 2)],
+        user_version=907,
+    )
+
+    versions = {r.last_watched_ms: r.schema_version for r in pipepipe.watched(tmp_path)}
+    assert versions == {MAR: 901, JUL: 907}
 
 
 def test_real_export_matches_known_shape(real_export: Path) -> None:

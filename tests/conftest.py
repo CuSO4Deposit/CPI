@@ -64,6 +64,7 @@ def make_export(
     history: Sequence[tuple[int, int, int]],
     progress: Sequence[tuple[int, int]] = (),
     search: Sequence[tuple[int, int, str]] = (),
+    user_version: int = 901,
 ) -> Path:
     """Build a fake PipePipe export.
 
@@ -74,6 +75,7 @@ def make_export(
     """
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    conn.execute(f"PRAGMA user_version = {int(user_version)}")
     conn.executemany(_INSERT_STREAM, streams)
     conn.executemany("INSERT INTO stream_history VALUES (?, ?, ?)", history)
     conn.executemany("INSERT INTO stream_state VALUES (?, ?)", progress)

@@ -48,6 +48,12 @@ def open_export(path: Path) -> Iterator[sqlite3.Connection]:
             yield conn
 
 
+def schema_version(conn: sqlite3.Connection) -> int:
+    """The export's Room `user_version`. Recorded for provenance, never branched on."""
+    version: int = conn.execute("PRAGMA user_version").fetchone()[0]
+    return version
+
+
 def _stream(row: sqlite3.Row) -> Stream:
     return Stream(
         service_id=row["service_id"],
@@ -76,6 +82,7 @@ def watched(path: Path) -> Iterator[WatchRecord]:
     """
     name = path.name
     with open_export(path) as conn:
+        version = schema_version(conn)
         for row in conn.execute(query):
             yield WatchRecord(
                 stream=_stream(row),
@@ -83,6 +90,7 @@ def watched(path: Path) -> Iterator[WatchRecord]:
                 repeat_count=row["repeat_count"],
                 progress_ms=row["progress_time"],
                 snapshot=name,
+                schema_version=version,
             )
 
 
@@ -95,12 +103,14 @@ def searches(path: Path) -> Iterator[Search]:
     """
     name = path.name
     with open_export(path) as conn:
+        version = schema_version(conn)
         for row in conn.execute(query):
             yield Search(
                 service_id=row["service_id"],
                 query=row["search"],
                 when_ms=row["creation_date"],
                 snapshot=name,
+                schema_version=version,
             )
 
 
@@ -113,6 +123,7 @@ def subscriptions(path: Path) -> Iterator[Subscription]:
     """
     name = path.name
     with open_export(path) as conn:
+        version = schema_version(conn)
         for row in conn.execute(query):
             yield Subscription(
                 service_id=row["service_id"],
@@ -121,6 +132,7 @@ def subscriptions(path: Path) -> Iterator[Subscription]:
                 avatar_url=row["avatar_url"],
                 subscriber_count=row["subscriber_count"],
                 snapshot=name,
+                schema_version=version,
             )
 
 
@@ -135,12 +147,14 @@ def playlist_entries(path: Path) -> Iterator[PlaylistEntry]:
     """
     name = path.name
     with open_export(path) as conn:
+        version = schema_version(conn)
         for row in conn.execute(query):
             yield PlaylistEntry(
                 playlist_name=row["playlist_name"],
                 index=row["join_index"],
                 stream=_stream(row),
                 snapshot=name,
+                schema_version=version,
             )
 
 
@@ -157,5 +171,5 @@ def stats(path: Path) -> dict[str, int]:
         out = {
             t: conn.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in tables
         }
-        out["_user_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
+        out["_user_version"] = schema_version(conn)
         return out
