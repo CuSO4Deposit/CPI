@@ -179,6 +179,84 @@ def test_records_carry_their_snapshot_version(tmp_path: Path) -> None:
     assert versions == {MAR: 901, JUL: 907}
 
 
+def test_streams_includes_never_watched(tmp_path: Path) -> None:
+    """A video with no history row is invisible to watched() but must show up here."""
+    make_export(
+        tmp_path / "PipePipeData-20260101_000000.db",
+        streams=[
+            (1, 5, "https://b.tv/SEEN", "watched", 60),
+            (2, 5, "https://b.tv/UNSEEN", "saved for later", 60),
+        ],
+        history=[(1, MAR, 1)],
+    )
+
+    assert [r.stream.url for r in pipepipe.watched(tmp_path)] == ["https://b.tv/SEEN"]
+    assert {s.url for s in pipepipe.streams(tmp_path)} == {
+        "https://b.tv/SEEN",
+        "https://b.tv/UNSEEN",
+    }
+
+
+def test_streams_takes_metadata_from_newest_snapshot(tmp_path: Path) -> None:
+    """Titles get edited and view counts climb, so the latest snapshot wins."""
+    make_export(
+        tmp_path / "PipePipeData-20240401_000000.db",
+        streams=[(1, 5, "https://b.tv/BV1", "old title", 60)],
+        history=[],
+    )
+    make_export(
+        tmp_path / "PipePipeData-20260728_000000.db",
+        streams=[(1, 5, "https://b.tv/BV1", "new title", 60)],
+        history=[],
+    )
+
+    (stream,) = list(pipepipe.streams(tmp_path))
+    assert stream.title == "new title"
+
+
+def test_feed_accumulates_because_the_app_prunes_it(tmp_path: Path) -> None:
+    """Each export holds only a recent window, so the union beats any one of them."""
+    subs = [(10, 5, "https://b.tv/user/1", "a channel")]
+    make_export(
+        tmp_path / "PipePipeData-20240401_000000.db",
+        streams=[(1, 5, "https://b.tv/OLD", "old", 60)],
+        history=[],
+        subscriptions=subs,
+        feed=[(1, 10)],
+    )
+    make_export(
+        tmp_path / "PipePipeData-20260728_000000.db",
+        streams=[(2, 5, "https://b.tv/NEW", "new", 60)],
+        history=[],
+        subscriptions=subs,
+        feed=[(2, 10)],  # the old entry has been pruned
+    )
+
+    entries = list(pipepipe.feed(tmp_path))
+    assert {e.stream.url for e in entries} == {"https://b.tv/OLD", "https://b.tv/NEW"}
+    assert {e.subscription.name for e in entries} == {"a channel"}
+
+
+def test_remote_playlists_from_latest_snapshot(tmp_path: Path) -> None:
+    make_export(
+        tmp_path / "PipePipeData-20240401_000000.db",
+        streams=[],
+        history=[],
+        remote_playlists=[(5, "gone since", "https://b.tv/p/1", "someone", 3)],
+    )
+    make_export(
+        tmp_path / "PipePipeData-20260728_000000.db",
+        streams=[],
+        history=[],
+        remote_playlists=[(0, "a course", "https://yt/playlist?list=X", "prof", 37)],
+    )
+
+    (playlist,) = list(pipepipe.remote_playlists(tmp_path))
+    assert playlist.name == "a course"
+    assert playlist.stream_count == 37
+    assert playlist.service is Service.YOUTUBE
+
+
 def test_real_export_matches_known_shape(real_export: Path) -> None:
     st = parser.stats(real_export)
     assert st["_user_version"] == 901
@@ -192,3 +270,21 @@ def test_real_export_matches_known_shape(real_export: Path) -> None:
     assert max(r.repeat_count for r in records) == 3543
     assert records == sorted(records, key=lambda r: r.last_watched_ms)
     assert {r.stream.service_id for r in records} <= {0, 5, 6}
+
+
+def test_real_export_reaches_streams_history_cannot(real_export: Path) -> None:
+    """400 of these videos have no history row, so watched() never sees them."""
+    all_streams = list(parser.streams(real_export))
+    assert len(all_streams) == 3634
+    assert len({s.key for s in all_streams}) == len(all_streams)
+
+    watched_keys = {r.stream.key for r in parser.watched(real_export)}
+    assert len({s.key for s in all_streams} - watched_keys) == 400
+
+    feed_entries = list(parser.feed(real_export))
+    assert len(feed_entries) == 293
+    assert len({e.subscription.key for e in feed_entries}) == 26
+
+    playlists = list(parser.remote_playlists(real_export))
+    assert len(playlists) == 12
+    assert all(p.stream_count is not None for p in playlists)

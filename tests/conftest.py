@@ -43,6 +43,14 @@ CREATE TABLE `playlists` (
 CREATE TABLE `playlist_stream_join` (
     `playlist_id` INTEGER NOT NULL, `stream_id` INTEGER NOT NULL,
     `join_index` INTEGER NOT NULL, PRIMARY KEY(`playlist_id`, `join_index`));
+CREATE TABLE `remote_playlists` (
+    `uid` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    `service_id` INTEGER NOT NULL, `name` TEXT, `url` TEXT,
+    `thumbnail_url` TEXT, `uploader` TEXT, `display_index` INTEGER NOT NULL,
+    `stream_count` INTEGER);
+CREATE TABLE `feed` (
+    `stream_id` INTEGER NOT NULL, `subscription_id` INTEGER NOT NULL,
+    PRIMARY KEY(`stream_id`, `subscription_id`));
 """
 
 _INSERT_STREAM = """
@@ -56,6 +64,17 @@ _INSERT_SEARCH = """
 INSERT INTO search_history (creation_date, service_id, search) VALUES (?, ?, ?)
 """
 
+_INSERT_SUBSCRIPTION = """
+INSERT INTO subscriptions (uid, service_id, url, name, notification_mode)
+VALUES (?, ?, ?, ?, 0)
+"""
+
+_INSERT_REMOTE_PLAYLIST = """
+INSERT INTO remote_playlists
+    (service_id, name, url, uploader, display_index, stream_count)
+VALUES (?, ?, ?, ?, 0, ?)
+"""
+
 
 def make_export(
     path: Path,
@@ -64,6 +83,9 @@ def make_export(
     history: Sequence[tuple[int, int, int]],
     progress: Sequence[tuple[int, int]] = (),
     search: Sequence[tuple[int, int, str]] = (),
+    subscriptions: Sequence[tuple[int, int, str, str]] = (),
+    feed: Sequence[tuple[int, int]] = (),
+    remote_playlists: Sequence[tuple[int, str, str, str, int]] = (),
     user_version: int = 901,
 ) -> Path:
     """Build a fake PipePipe export.
@@ -72,6 +94,9 @@ def make_export(
     history: (stream_id, access_date_ms, repeat_count)
     progress: (stream_id, progress_ms)
     search: (creation_date_ms, service_id, query)
+    subscriptions: (uid, service_id, url, name)
+    feed: (stream_id, subscription_id)
+    remote_playlists: (service_id, name, url, uploader, stream_count)
     """
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
@@ -80,6 +105,9 @@ def make_export(
     conn.executemany("INSERT INTO stream_history VALUES (?, ?, ?)", history)
     conn.executemany("INSERT INTO stream_state VALUES (?, ?)", progress)
     conn.executemany(_INSERT_SEARCH, search)
+    conn.executemany(_INSERT_SUBSCRIPTION, subscriptions)
+    conn.executemany("INSERT INTO feed VALUES (?, ?)", feed)
+    conn.executemany(_INSERT_REMOTE_PLAYLIST, remote_playlists)
     conn.commit()
     conn.close()
     return path

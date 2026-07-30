@@ -30,12 +30,33 @@ Consequences, all of which the API already reflects:
 views. `is_upload_date_approximation = 1` means `upload_date` was derived from a
 relative string like "3 days ago" — don't treat it as exact.
 
+`streams` is an entity in its own right, not an appendix to history. In the
+reference export 400 of 3634 videos have no history row (134 reachable only via a
+local playlist, 272 only via the feed, 3 orphaned), so anything built on `watched()`
+alone silently omits them.
+
+`is_paid` is visibly a later `ALTER TABLE` addition — unquoted and last, where Room
+quotes every generated column name. Older exports may lack it. When a column starts
+drifting, feature-detect with `PRAGMA table_info` rather than branching on
+`user_version`.
+
 `uid` is a per-export autoincrement and renumbers after a reinstall. Identity is
 `(service_id, url)`, which has a UNIQUE index. `Stream` deliberately omits `uid`.
 
 Service ids are the fork's **own** numbering, not upstream NewPipe's. Confirmed:
 `0` YouTube, `5` bilibili, `6` niconico. `Service._missing_` returns `None` rather
 than raising, so a new service in a future release doesn't break reading an export.
+
+## State vs log
+
+Which tables accumulate decides which entry points may read only the newest
+snapshot. `feed` gets pruned by the app and `stream_history` / `search_history`
+grow, so those accumulate across snapshots. `subscriptions`, `playlists` and
+`remote_playlists` describe present state — a removed row leaves no trace in any
+later export, so nothing can reconstruct when it went away.
+
+`remote_playlists` stores only a reference (name, uploader, `stream_count`), never
+the member videos; a bookmarked playlist cannot be expanded from an export alone.
 
 ## Cautions
 

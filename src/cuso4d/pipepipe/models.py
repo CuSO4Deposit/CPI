@@ -161,6 +161,52 @@ class Subscription:
 
 
 @dataclass(frozen=True)
+class FeedEntry:
+    """A video that appeared in a subscription's feed.
+
+    Interesting precisely because it is independent of watch history: a feed entry
+    with no matching `WatchRecord` is something that was put in front of you and
+    passed over. The app prunes old feed rows, so successive snapshots see
+    different windows.
+    """
+
+    stream: Stream
+    subscription: Subscription
+    snapshot: str
+    schema_version: int
+
+    @property
+    def key(self) -> tuple[int, str, int, str]:
+        return (*self.stream.key, *self.subscription.key)
+
+
+@dataclass(frozen=True)
+class RemotePlaylist:
+    """A playlist owned by the service, bookmarked rather than built locally.
+
+    Only the reference is stored: PipePipe records the name and stream count but
+    not the member videos, so there is no way to expand one from an export alone.
+    """
+
+    service_id: int
+    url: str
+    name: str | None
+    uploader: str | None
+    thumbnail_url: str | None
+    stream_count: int | None
+    snapshot: str
+    schema_version: int
+
+    @property
+    def service(self) -> Service | None:
+        return Service(self.service_id)
+
+    @property
+    def key(self) -> tuple[int, str]:
+        return (self.service_id, self.url)
+
+
+@dataclass(frozen=True)
 class PlaylistEntry:
     """A stream's membership in a local playlist, as of one snapshot."""
 

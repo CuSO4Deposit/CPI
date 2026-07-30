@@ -13,7 +13,9 @@ from pathlib import Path
 
 from cuso4d.core.sqlite import sqlite_ro, sqlite_ro_in_zip, zip_members
 from cuso4d.pipepipe.models import (
+    FeedEntry,
     PlaylistEntry,
+    RemotePlaylist,
     Search,
     Stream,
     Subscription,
@@ -114,10 +116,77 @@ def searches(path: Path) -> Iterator[Search]:
             )
 
 
+_SUBSCRIPTION_COLUMNS = """
+    b.service_id AS sub_service_id, b.url AS sub_url, b.name AS sub_name,
+    b.avatar_url AS sub_avatar_url, b.subscriber_count AS sub_subscriber_count
+"""
+
+
+def _subscription(row: sqlite3.Row, snapshot: str, version: int) -> Subscription:
+    return Subscription(
+        service_id=row["sub_service_id"],
+        url=row["sub_url"],
+        name=row["sub_name"],
+        avatar_url=row["sub_avatar_url"],
+        subscriber_count=row["sub_subscriber_count"],
+        snapshot=snapshot,
+        schema_version=version,
+    )
+
+
 def subscriptions(path: Path) -> Iterator[Subscription]:
+    query = f"""
+        SELECT {_SUBSCRIPTION_COLUMNS}
+        FROM subscriptions b
+        WHERE b.url IS NOT NULL
+        ORDER BY b.name
+    """
+    name = path.name
+    with open_export(path) as conn:
+        version = schema_version(conn)
+        for row in conn.execute(query):
+            yield _subscription(row, name, version)
+
+
+def streams(path: Path) -> Iterator[Stream]:
+    """Every video the app knows about, watched or not.
+
+    The `streams` table is an entity in its own right, not an appendix to history:
+    videos reachable only through a playlist or a subscription feed have no
+    history row at all, and are invisible to `watched()`.
+    """
+    query = f"SELECT {_STREAM_COLUMNS} FROM streams s ORDER BY s.uid"
+    with open_export(path) as conn:
+        for row in conn.execute(query):
+            yield _stream(row)
+
+
+def feed(path: Path) -> Iterator[FeedEntry]:
+    """Videos that showed up in a subscription's feed, in this snapshot's window."""
+    query = f"""
+        SELECT {_STREAM_COLUMNS}, {_SUBSCRIPTION_COLUMNS}
+        FROM feed f
+        JOIN streams s ON s.uid = f.stream_id
+        JOIN subscriptions b ON b.uid = f.subscription_id
+        ORDER BY s.upload_date
+    """
+    name = path.name
+    with open_export(path) as conn:
+        version = schema_version(conn)
+        for row in conn.execute(query):
+            yield FeedEntry(
+                stream=_stream(row),
+                subscription=_subscription(row, name, version),
+                snapshot=name,
+                schema_version=version,
+            )
+
+
+def remote_playlists(path: Path) -> Iterator[RemotePlaylist]:
+    """Bookmarked service-side playlists. Members are not stored, only the count."""
     query = """
-        SELECT service_id, url, name, avatar_url, subscriber_count
-        FROM subscriptions
+        SELECT service_id, url, name, uploader, thumbnail_url, stream_count
+        FROM remote_playlists
         WHERE url IS NOT NULL
         ORDER BY name
     """
@@ -125,12 +194,13 @@ def subscriptions(path: Path) -> Iterator[Subscription]:
     with open_export(path) as conn:
         version = schema_version(conn)
         for row in conn.execute(query):
-            yield Subscription(
+            yield RemotePlaylist(
                 service_id=row["service_id"],
                 url=row["url"],
                 name=row["name"],
-                avatar_url=row["avatar_url"],
-                subscriber_count=row["subscriber_count"],
+                uploader=row["uploader"],
+                thumbnail_url=row["thumbnail_url"],
+                stream_count=row["stream_count"],
                 snapshot=name,
                 schema_version=version,
             )
