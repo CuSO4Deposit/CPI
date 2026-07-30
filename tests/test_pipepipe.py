@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from conftest import make_export
 
 from cuso4d import pipepipe
@@ -48,15 +49,45 @@ def test_repeat_count_zero_means_merely_marked(tmp_path: Path) -> None:
     assert rec.marked_only
 
 
-def test_progress_ratio_unknown_without_duration(tmp_path: Path) -> None:
+@pytest.mark.parametrize("placeholder", [0, -1])
+def test_duration_unknown_for_live_streams(tmp_path: Path, placeholder: int) -> None:
+    """Live streams store 0 or -1, which must not read as a real length.
+
+    Summing `duration_s` blindly made the reference export report a negative
+    total number of hours for LIVE_STREAM.
+    """
     db = make_export(
-        tmp_path / "e.db",
-        streams=[(1, 0, "https://yt/x", "t", 0)],
+        tmp_path / f"e{placeholder}.db",
+        streams=[(1, 0, "https://yt/x", "t", placeholder)],
         history=[(1, MAR, 1)],
         progress=[(1, 5000)],
     )
     (rec,) = list(parser.watched(db))
+    assert rec.stream.duration_s == placeholder  # raw column still available
+    assert rec.stream.duration is None
     assert rec.progress_ratio is None
+
+
+def test_duration_is_a_timedelta_when_known(tmp_path: Path) -> None:
+    db = make_export(
+        tmp_path / "e.db",
+        streams=[(1, 0, "https://yt/x", "t", 661)],
+        history=[(1, MAR, 1)],
+    )
+    (rec,) = list(parser.watched(db))
+    assert rec.stream.duration == timedelta(seconds=661)
+
+
+def test_progress_beyond_duration_is_clamped(tmp_path: Path) -> None:
+    """The player rounds, so a finished video can report one second too many."""
+    db = make_export(
+        tmp_path / "e.db",
+        streams=[(1, 5, "https://b.tv/x", "t", 79)],
+        history=[(1, MAR, 1)],
+        progress=[(1, 80_000)],
+    )
+    (rec,) = list(parser.watched(db))
+    assert rec.progress_ratio == 1.0
 
 
 def test_reads_export_from_zip(tmp_path: Path) -> None:
@@ -288,3 +319,12 @@ def test_real_export_reaches_streams_history_cannot(real_export: Path) -> None:
     playlists = list(parser.remote_playlists(real_export))
     assert len(playlists) == 12
     assert all(p.stream_count is not None for p in playlists)
+
+
+def test_real_export_has_live_streams_without_duration(real_export: Path) -> None:
+    """31 records where `duration_s` is a placeholder, 2 of them negative."""
+    records = list(parser.watched(real_export))
+    unknown = [r for r in records if r.stream.duration is None]
+    assert len(unknown) == 31
+    assert {r.stream.stream_type for r in unknown} == {"LIVE_STREAM"}
+    assert sorted({r.stream.duration_s for r in unknown}) == [-1, 0]

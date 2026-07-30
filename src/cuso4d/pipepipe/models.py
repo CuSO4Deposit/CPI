@@ -8,7 +8,7 @@ in UTC.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import IntEnum
 from functools import cached_property
 
@@ -52,7 +52,15 @@ class Stream:
     url: str
     title: str
     stream_type: str
+
     duration_s: int
+    """Raw `duration` column, in seconds. Not always a real length.
+
+    Live streams carry `0` or `-1` as a placeholder for "unknown". Prefer
+    `duration`, which turns those into `None` instead of letting them through as
+    plausible-looking numbers.
+    """
+
     uploader: str
     uploader_url: str | None
     thumbnail_url: str | None
@@ -67,6 +75,19 @@ class Stream:
     @property
     def key(self) -> tuple[int, str]:
         return (self.service_id, self.url)
+
+    @cached_property
+    def duration(self) -> timedelta | None:
+        """How long the video is, or None if PipePipe doesn't know.
+
+        Unknown for live streams, which store `0` or `-1` in the column. Summing
+        `duration_s` directly over a set of videos therefore quietly mixes real
+        lengths with placeholders — in the reference export that made the total for
+        `LIVE_STREAM` come out as a negative number of hours.
+        """
+        if self.duration_s <= 0:
+            return None
+        return timedelta(seconds=self.duration_s)
 
     @cached_property
     def upload_date(self) -> datetime | None:
@@ -92,7 +113,16 @@ class WatchRecord:
 
     stream: Stream
     last_watched_ms: int
+
     repeat_count: int
+    """Times the app counted this as played. Not a count of full viewings.
+
+    The reference export has a 661-second video at 3543, which as
+    `duration x repeat_count` would be 650 hours of one talk — replays, seeks and
+    background loops all land here. Fine for ranking what got revisited; unsound as
+    a basis for time-spent totals.
+    """
+
     progress_ms: int | None
 
     snapshot: str
@@ -122,10 +152,15 @@ class WatchRecord:
 
     @property
     def progress_ratio(self) -> float | None:
-        """How far into the video playback got, 0..1, if both values are known."""
-        if self.progress_ms is None or self.stream.duration_s <= 0:
+        """How far into the video playback got, 0..1, if both values are known.
+
+        Clamped: the player rounds, so a finished video often reports a progress a
+        second beyond its own duration.
+        """
+        duration = self.stream.duration
+        if self.progress_ms is None or duration is None:
             return None
-        return min(1.0, self.progress_ms / (self.stream.duration_s * 1000))
+        return min(1.0, self.progress_ms / (duration.total_seconds() * 1000))
 
 
 @dataclass(frozen=True)

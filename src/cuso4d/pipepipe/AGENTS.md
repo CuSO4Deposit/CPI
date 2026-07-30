@@ -30,6 +30,19 @@ Consequences, all of which the API already reflects:
 views. `is_upload_date_approximation = 1` means `upload_date` was derived from a
 relative string like "3 days ago" — don't treat it as exact.
 
+## Two columns that lie
+
+`duration` is `0` or `-1` for live streams, meaning unknown. Summing it directly
+mixes placeholders with real lengths; in the reference export that made LIVE_STREAM
+total a negative number of hours. Use `Stream.duration`, which is `None` for those.
+
+`repeat_count` counts what the app registered as a play, not full viewings —
+replays, seeks and background loops all increment it. The reference export has a
+661-second video at 3543, i.e. 650 hours of one talk if multiplied out. Usable for
+ranking what got revisited, unsound for time-spent totals. Time spent can only be
+given as a range: sum durations once each for a lower bound, weight by
+`repeat_count` for a wildly loose upper one.
+
 `streams` is an entity in its own right, not an appendix to history. In the
 reference export 400 of 3634 videos have no history row (134 reachable only via a
 local playlist, 272 only via the feed, 3 orphaned), so anything built on `watched()`
