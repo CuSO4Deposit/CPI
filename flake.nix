@@ -37,6 +37,10 @@
               ruff-format.enable = true;
             };
           };
+          packages = {
+            default = config.packages.cpi;
+            cpi = pkgs.python3Packages.callPackage ./package.nix { };
+          };
           devShells = {
             default = pkgs.mkShellNoCC {
               buildInputs = with pkgs; [
