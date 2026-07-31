@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -114,6 +115,104 @@ def make_export(
     return path
 
 
+# Minimal subset of the Gadgetbridge (greenDAO) schema, copied verbatim from a real
+# backup. `WITHOUT ROWID` and `ON CONFLICT REPLACE` are load-bearing: they are what
+# make a sample's identity `(timestamp, device)`, which accumulation relies on.
+GB_SCHEMA = """
+CREATE TABLE "MI_BAND_ACTIVITY_SAMPLE" ("TIMESTAMP" INTEGER  NOT NULL ,
+    "DEVICE_ID" INTEGER  NOT NULL ,"USER_ID" INTEGER NOT NULL ,
+    "RAW_INTENSITY" INTEGER NOT NULL ,"STEPS" INTEGER NOT NULL ,
+    "RAW_KIND" INTEGER NOT NULL ,"HEART_RATE" INTEGER NOT NULL ,
+    PRIMARY KEY ("TIMESTAMP" ,"DEVICE_ID" ) ON CONFLICT REPLACE) WITHOUT ROWID;
+CREATE TABLE "HUAMI_STRESS_SAMPLE" ("TIMESTAMP" INTEGER  NOT NULL ,
+    "DEVICE_ID" INTEGER  NOT NULL ,"USER_ID" INTEGER NOT NULL ,
+    "TYPE_NUM" INTEGER NOT NULL ,"STRESS" INTEGER NOT NULL ,
+    PRIMARY KEY ("TIMESTAMP" ,"DEVICE_ID" ) ON CONFLICT REPLACE) WITHOUT ROWID;
+CREATE TABLE "BATTERY_LEVEL" ("TIMESTAMP" INTEGER  NOT NULL ,
+    "DEVICE_ID" INTEGER  NOT NULL ,"LEVEL" INTEGER NOT NULL ,
+    "BATTERY_INDEX" INTEGER  NOT NULL ,
+    PRIMARY KEY ("TIMESTAMP" ,"DEVICE_ID" ,"BATTERY_INDEX" ) ON CONFLICT REPLACE)
+    WITHOUT ROWID;
+CREATE TABLE "DEVICE" ("_id" INTEGER PRIMARY KEY ,"NAME" TEXT NOT NULL ,
+    "MANUFACTURER" TEXT NOT NULL ,"IDENTIFIER" TEXT NOT NULL UNIQUE ,
+    "TYPE" INTEGER NOT NULL ,"TYPE_NAME" TEXT NOT NULL ,"MODEL" TEXT,"ALIAS" TEXT,
+    "PARENT_FOLDER" TEXT);
+CREATE TABLE "USER_ATTRIBUTES" ("_id" INTEGER PRIMARY KEY ,
+    "HEIGHT_CM" INTEGER NOT NULL ,"WEIGHT_KG" INTEGER NOT NULL ,
+    "SLEEP_GOAL_HPD" INTEGER,"STEPS_GOAL_SPD" INTEGER,"VALID_FROM_UTC" INTEGER,
+    "VALID_TO_UTC" INTEGER,"USER_ID" INTEGER NOT NULL );
+CREATE TABLE "HUAMI_SPO2_SAMPLE" ("TIMESTAMP" INTEGER NOT NULL ,
+    "DEVICE_ID" INTEGER NOT NULL ,"USER_ID" INTEGER NOT NULL ,
+    "TYPE_NUM" INTEGER NOT NULL ,"SPO2" INTEGER NOT NULL ,
+    PRIMARY KEY ("TIMESTAMP" ,"DEVICE_ID" ) ON CONFLICT REPLACE) WITHOUT ROWID;
+"""
+
+_GB_INSERT_ACTIVITY = """
+INSERT INTO MI_BAND_ACTIVITY_SAMPLE
+    (TIMESTAMP, DEVICE_ID, USER_ID, RAW_INTENSITY, STEPS, RAW_KIND, HEART_RATE)
+VALUES (?, ?, 1, ?, ?, ?, ?)
+"""
+
+
+def make_gb_export(
+    path: Path,
+    *,
+    activity: Sequence[tuple[int, int, int, int, int, int]] = (),
+    stress: Sequence[tuple[int, int, int, int]] = (),
+    battery: Sequence[tuple[int, int, int, int]] = (),
+    devices: Sequence[tuple[int, str, str, str, str]] = (),
+    user_attributes: Sequence[tuple[int, int, int, int, int | None, int | None]] = (),
+    as_zip: bool = True,
+    db_member: str = "database/Gadgetbridge",
+    extra_members: Sequence[str] = (),
+) -> Path:
+    """Build a fake Gadgetbridge backup.
+
+    activity: (timestamp_s, device_id, raw_intensity, steps, raw_kind, heart_rate)
+    stress: (timestamp_ms, device_id, type_num, stress)
+    battery: (timestamp_s, device_id, level, battery_index)
+    devices: (_id, name, manufacturer, identifier, type_name)
+    user_attributes: (_id, height_cm, weight_kg, steps_goal, valid_from_ms, valid_to_ms)
+
+    Defaults to a zip, since that is what the app produces and what the member-name
+    handling has to get right. `db_member` and `extra_members` exist to build
+    malformed backups.
+    """
+    db = path.parent / "Gadgetbridge" if as_zip else path
+    conn = sqlite3.connect(db)
+    conn.executescript(GB_SCHEMA)
+    conn.executemany(_GB_INSERT_ACTIVITY, activity)
+    conn.executemany(
+        "INSERT INTO HUAMI_STRESS_SAMPLE (TIMESTAMP, DEVICE_ID, USER_ID, TYPE_NUM,"
+        " STRESS) VALUES (?, ?, 1, ?, ?)",
+        stress,
+    )
+    conn.executemany("INSERT INTO BATTERY_LEVEL VALUES (?, ?, ?, ?)", battery)
+    conn.executemany(
+        "INSERT INTO DEVICE (_id, NAME, MANUFACTURER, IDENTIFIER, TYPE, TYPE_NAME)"
+        " VALUES (?, ?, ?, ?, 0, ?)",
+        devices,
+    )
+    conn.executemany(
+        "INSERT INTO USER_ATTRIBUTES (_id, HEIGHT_CM, WEIGHT_KG, STEPS_GOAL_SPD,"
+        " VALID_FROM_UTC, VALID_TO_UTC, USER_ID) VALUES (?, ?, ?, ?, ?, ?, 1)",
+        user_attributes,
+    )
+    conn.commit()
+    conn.close()
+
+    if not as_zip:
+        return path
+
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.write(db, db_member)
+        zf.writestr("gadgetbridge.json", '{"appVersionName": "0.86.1"}')
+        for member in extra_members:
+            zf.write(db, member)
+    db.unlink()
+    return path
+
+
 @pytest.fixture
 def real_export() -> Path:
     """A real PipePipe export, if `CPI_TEST_PIPEPIPE_EXPORT` points at one.
@@ -129,4 +228,21 @@ def real_export() -> Path:
     path = Path(env).expanduser()
     if not path.exists():
         pytest.fail(f"CPI_TEST_PIPEPIPE_EXPORT points at a missing file: {path}")
+    return path
+
+
+@pytest.fixture
+def real_gb_export() -> Path:
+    """A real Gadgetbridge backup, if `CPI_TEST_GADGETBRIDGE_EXPORT` points at one.
+
+    Same rule as `real_export`: assert only invariants that hold for *any* backup.
+    A count from one database says nothing about the code and leaks how much someone
+    slept.
+    """
+    env = os.environ.get("CPI_TEST_GADGETBRIDGE_EXPORT")
+    if not env:
+        pytest.skip("set CPI_TEST_GADGETBRIDGE_EXPORT to run against a real backup")
+    path = Path(env).expanduser()
+    if not path.exists():
+        pytest.fail(f"CPI_TEST_GADGETBRIDGE_EXPORT points at a missing file: {path}")
     return path

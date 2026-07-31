@@ -12,6 +12,13 @@ for rec in watched("~/archives/pipepipe/*.zip"):
     print(rec.last_watched, rec.repeat_count, rec.stream.title)
 ```
 
+```python
+from cuso4d.gadgetbridge import activity
+
+for sample in activity("~/archives/gadgetbridge/gadgetbridge_*.zip"):
+    print(sample.when, sample.kind, sample.heart_rate)
+```
+
 ## Design
 
 Archives are the source of truth. Exports are stored verbatim under timestamped
@@ -31,14 +38,22 @@ not part of this package.
 
 ## Layout
 
-    src/cuso4d/core/       file globbing, read-only sqlite
-    src/cuso4d/pipepipe/   watch history, searches, subscriptions
+    src/cuso4d/core/          file globbing, read-only sqlite
+    src/cuso4d/pipepipe/      watch history, searches, subscriptions
+    src/cuso4d/gadgetbridge/  activity, sleep, heart rate, stress, battery
 
 ## Expected export files structure
 
-Exports keep the name the app gave them (`PipePipeData-20260727_085246.zip`),
-which sorts chronologically and records the real export time; mtime does not
-survive copying off the phone. Drop them in the archive directory as-is.
+Exports keep the name the app gave them (`PipePipeData-20260727_085246.zip`,
+`gadgetbridge_20260730160959.zip`), which sorts chronologically and records the
+real export time; mtime does not survive copying off the phone. Drop them in the
+archive directory as-is.
+
+How much old snapshots matter depends on the app. PipePipe overwrites a video's
+timestamp on every play, so an old export is the only record of the plays before
+it. Gadgetbridge appends immutable per-minute rows, so one backup already holds
+everything the app knows — but the band itself only buffers about a week, so any
+stretch you never synced is gone regardless of how many backups you take later.
 
 ## Development
 
