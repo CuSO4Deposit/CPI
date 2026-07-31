@@ -1,6 +1,6 @@
-# CPI
+# CuSO4D Programming Interface
 
-A typed access layer over my personal data exports, in the spirit of
+A typed access layer over CuSO4D data, in the spirit of
 [HPI](https://beepb00p.xyz/hpi.html).
 
 Modules live under `cuso4d.*`:
@@ -34,12 +34,7 @@ not part of this package.
     src/cuso4d/core/       file globbing, read-only sqlite
     src/cuso4d/pipepipe/   watch history, searches, subscriptions
 
-## Archiving
-
-PipePipe keeps one history row per video and overwrites its `access_date` on every
-play, so the app only knows the *last* time each video was watched. Archived
-snapshots are the only record of anything earlier — export regularly, or that
-history is gone.
+## Expected export files structure
 
 Exports keep the name the app gave them (`PipePipeData-20260727_085246.zip`),
 which sorts chronologically and records the real export time; mtime does not
