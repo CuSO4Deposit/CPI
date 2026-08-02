@@ -30,6 +30,12 @@ backup contains a second, byte-identical database under `files/`, which is whate
 the last *manual* export left there. Guessing at it would parse perfectly and report
 stale data. When the documented path is missing, fail.
 
+**"The newest snapshot" needs a host once a source is multi-machine.** Firefox runs
+on several machines and its ids and guids are both profile-local, so identity there
+is `(host, url)` and a present-state table is read from *each host's* newest
+snapshot. Taking the single newest file would let whichever machine exported most
+recently define every other machine's bookmarks.
+
 **A carry-forward must not span a gap.** Where an app stores "same as before"
 instead of repeating a state, resolving it is required — but a gap in the record
 means the device wasn't syncing, not that the old state held. Gadgetbridge's own
@@ -52,6 +58,10 @@ What accumulation *means* differs by source, so check before assuming:
 - **Gadgetbridge** appends — one immutable row per minute, so a single backup holds
   the whole history and merging is deduplication by natural key. Old backups matter
   only for stretches the band never synced before overwriting its ~1 week buffer.
+- **Firefox** appends, then expires. Rows are immutable, so one snapshot holds a real
+  timeline, but Firefox deletes old ones itself — engagement sooner than history, and
+  a re-download overwrites the annotation of the earlier one. Merging is a union by
+  natural key, and old snapshots are the only record of what has been expired.
 
 Where a cross-snapshot merge feeds a transform that depends on preceding rows, merge
 first and transform once. Transforming per snapshot then merging silently gives the
@@ -69,14 +79,16 @@ wikis for these apps are thin and often wrong.
 ## Tests
 
 Real exports are personal data and never enter the repo. Tests build fixtures with
-`conftest.make_export` (PipePipe) or `conftest.make_gb_export` (Gadgetbridge), using
-schema copied verbatim from a real database. Copy the constraints too, not just the
-columns: `WITHOUT ROWID` and `ON CONFLICT REPLACE` are what make a Gadgetbridge
-sample's identity `(timestamp, device)`, which accumulation relies on.
+`conftest.make_export` (PipePipe), `make_gb_export` (Gadgetbridge) or
+`make_places_export` (Firefox), using schema copied verbatim from a real database.
+Copy the constraints too, not just the columns: `WITHOUT ROWID` and `ON CONFLICT
+REPLACE` are what make a Gadgetbridge sample's identity `(timestamp, device)`, and
+Firefox's UNIQUE indexes are what make a visit's `(place, visit_date)` — which
+accumulation relies on in both cases.
 
-A test may also opt into a real export via the `real_export` /  `real_gb_export`
-fixtures, pointed at by `CPI_TEST_PIPEPIPE_EXPORT` / `CPI_TEST_GADGETBRIDGE_EXPORT`;
-they skip when unset. Such tests may only assert invariants that hold for **any**
+A test may also opt into a real export via the `real_export` / `real_gb_export` /
+`real_places_export` fixtures, pointed at by `CPI_TEST_PIPEPIPE_EXPORT` /
+`CPI_TEST_GADGETBRIDGE_EXPORT` / `CPI_TEST_FIREFOX_EXPORT`; they skip when unset. Such tests may only assert invariants that hold for **any**
 export — uniqueness, ordering, subset relations between tables, sentinels never
 reaching a caller. Never assert a count from one particular database: those numbers
 say nothing about the code, break for anyone else, and quietly leak how much of what

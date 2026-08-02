@@ -19,8 +19,8 @@ buildPythonPackage {
   nativeCheckInputs = [ pytest ];
   checkPhase = ''
     runHook preCheck
-    # The real-export tests skip unless CPI_TEST_PIPEPIPE_EXPORT points somewhere,
-    # which it never does in a sandbox.
+    # The real-export tests skip unless CPI_TEST_{PIPEPIPE,GADGETBRIDGE,FIREFOX}_EXPORT
+    # points somewhere, which none of them ever do in a sandbox.
     pytest -q
     runHook postCheck
   '';
@@ -28,6 +28,8 @@ buildPythonPackage {
   pythonImportsCheck = [
     "cuso4d"
     "cuso4d.pipepipe"
+    "cuso4d.gadgetbridge"
+    "cuso4d.firefox"
   ];
 
   meta = {

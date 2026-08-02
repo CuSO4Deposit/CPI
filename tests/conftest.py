@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import lzma
 import os
+import shutil
 import sqlite3
 import zipfile
 from collections.abc import Sequence
@@ -210,6 +212,205 @@ def make_gb_export(
         for member in extra_members:
             zf.write(db, member)
     db.unlink()
+    return path
+
+
+# Subset of the Firefox `places.sqlite` schema, copied verbatim from a real
+# snapshot (user_version 86). The UNIQUE indexes are load-bearing, not decoration:
+# they are what make a visit's identity `(place, visit_date)` and an engagement's
+# `(place_id, created_at)`, which accumulation relies on. `moz_annos`' unique index
+# on `(place_id, anno_attribute_id)` is why only the latest download of a URL
+# survives in any one snapshot.
+PLACES_SCHEMA = """
+CREATE TABLE moz_origins ( id INTEGER PRIMARY KEY, prefix TEXT NOT NULL,
+    host TEXT NOT NULL, frecency INTEGER NOT NULL,
+    recalc_frecency INTEGER NOT NULL DEFAULT 0, alt_frecency INTEGER,
+    recalc_alt_frecency INTEGER NOT NULL DEFAULT 0, block_until_ms INTEGER,
+    block_pages_until_ms INTEGER, UNIQUE (prefix, host) );
+CREATE TABLE moz_places (   id INTEGER PRIMARY KEY, url LONGVARCHAR,
+    title LONGVARCHAR, rev_host LONGVARCHAR, visit_count INTEGER DEFAULT 0,
+    hidden INTEGER DEFAULT 0 NOT NULL, typed INTEGER DEFAULT 0 NOT NULL,
+    frecency INTEGER DEFAULT -1 NOT NULL, last_visit_date INTEGER , guid TEXT,
+    foreign_count INTEGER DEFAULT 0 NOT NULL, url_hash INTEGER DEFAULT 0 NOT NULL ,
+    description TEXT, preview_image_url TEXT, site_name TEXT,
+    origin_id INTEGER REFERENCES moz_origins(id),
+    recalc_frecency INTEGER NOT NULL DEFAULT 0, alt_frecency INTEGER,
+    recalc_alt_frecency INTEGER NOT NULL DEFAULT 0);
+CREATE UNIQUE INDEX moz_places_guid_uniqueindex ON moz_places (guid);
+CREATE TABLE moz_historyvisits (  id INTEGER PRIMARY KEY, from_visit INTEGER,
+    place_id INTEGER, visit_date INTEGER, visit_type INTEGER, session INTEGER,
+    source INTEGER DEFAULT 0 NOT NULL, triggeringPlaceId INTEGER);
+CREATE TABLE moz_places_metadata (id INTEGER PRIMARY KEY,
+    place_id INTEGER NOT NULL, referrer_place_id INTEGER,
+    created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0,
+    total_view_time INTEGER NOT NULL DEFAULT 0,
+    typing_time INTEGER NOT NULL DEFAULT 0, key_presses INTEGER NOT NULL DEFAULT 0,
+    scrolling_time INTEGER NOT NULL DEFAULT 0,
+    scrolling_distance INTEGER NOT NULL DEFAULT 0,
+    document_type INTEGER NOT NULL DEFAULT 0, search_query_id INTEGER,
+    FOREIGN KEY (place_id) REFERENCES moz_places(id) ON DELETE CASCADE,
+    FOREIGN KEY (referrer_place_id) REFERENCES moz_places(id) ON DELETE CASCADE
+    CHECK(place_id != referrer_place_id) );
+CREATE UNIQUE INDEX moz_places_metadata_placecreated_uniqueindex
+    ON moz_places_metadata (place_id, created_at);
+CREATE TABLE moz_bookmarks (  id INTEGER PRIMARY KEY, type INTEGER,
+    fk INTEGER DEFAULT NULL, parent INTEGER, position INTEGER, title LONGVARCHAR,
+    keyword_id INTEGER, folder_type TEXT, dateAdded INTEGER, lastModified INTEGER,
+    guid TEXT, syncStatus INTEGER NOT NULL DEFAULT 0,
+    syncChangeCounter INTEGER NOT NULL DEFAULT 1);
+CREATE UNIQUE INDEX moz_bookmarks_guid_uniqueindex ON moz_bookmarks (guid);
+CREATE TABLE moz_anno_attributes (  id INTEGER PRIMARY KEY,
+    name VARCHAR(32) UNIQUE NOT NULL);
+CREATE TABLE moz_annos (  id INTEGER PRIMARY KEY, place_id INTEGER NOT NULL,
+    anno_attribute_id INTEGER, content LONGVARCHAR, flags INTEGER DEFAULT 0,
+    expiration INTEGER DEFAULT 0, type INTEGER DEFAULT 0,
+    dateAdded INTEGER DEFAULT 0, lastModified INTEGER DEFAULT 0);
+CREATE UNIQUE INDEX moz_annos_placeattributeindex
+    ON moz_annos (place_id, anno_attribute_id);
+CREATE TABLE moz_inputhistory (  place_id INTEGER NOT NULL,
+    input LONGVARCHAR NOT NULL, use_count INTEGER,
+    PRIMARY KEY (place_id, input));
+"""
+
+#: The roots Firefox creates in every profile, as `(id, parent, guid, title)`.
+#: Copied from a real snapshot: ids 1-6, root's parent is 0, and the titles really
+#: are these bare lowercase strings rather than anything localized.
+PLACES_ROOTS = (
+    (1, 0, "root________", ""),
+    (2, 1, "menu________", "menu"),
+    (3, 1, "toolbar_____", "toolbar"),
+    (4, 1, "tags________", "tags"),
+    (5, 1, "unfiled_____", "unfiled"),
+    (6, 1, "mobile______", "mobile"),
+)
+
+_US = 1_000_000
+
+
+def make_places_export(
+    path: Path,
+    *,
+    places: Sequence[tuple[int, str, str | None, int]] = (),
+    visits: Sequence[tuple[int, int, int, int, int]] = (),
+    metadata: Sequence[tuple[int, int, int, int]] = (),
+    bookmarks: Sequence[tuple[int, int, int, int | None, str, str | None]] = (),
+    downloads: Sequence[tuple[int, str, str | None, int]] = (),
+    origins: Sequence[tuple[str, str, int]] = (),
+    inputs: Sequence[tuple[int, str, float]] = (),
+    frecency: dict[int, int] | None = None,
+    descriptions: dict[int, bytes] | None = None,
+    user_version: int = 86,
+    compress: bool = True,
+) -> Path:
+    """Build a fake Firefox `places.sqlite` snapshot.
+
+    places: (id, url, title, visit_count)
+    visits: (id, place_id, visit_date_us, visit_type, from_visit)
+    metadata: (place_id, created_at_ms, updated_at_ms, total_view_time_ms)
+    bookmarks: (id, type, parent, fk, guid, title) — roots are inserted already
+    downloads: (place_id, destination, metadata_json, dateAdded_us)
+    origins: (prefix, host, frecency)
+    inputs: (place_id, input, use_count)
+    frecency: place_id -> frecency, for testing the negative sentinel
+    descriptions: place_id -> raw bytes, for testing undecodable text
+
+    Defaults to writing `.xz`, since that is the archived form. `compress=False`
+    gives a bare database, which `parser.open_export` also accepts.
+    """
+    db = path.parent / f"{path.name}.tmp" if compress else path
+    conn = sqlite3.connect(db)
+    conn.executescript(PLACES_SCHEMA)
+    conn.execute(f"PRAGMA user_version = {int(user_version)}")
+
+    conn.executemany(
+        "INSERT INTO moz_places (id, url, title, visit_count, frecency, guid,"
+        " last_visit_date) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+        [
+            (pid, url, title, count, (frecency or {}).get(pid, 100), f"place{pid:08d}")
+            for pid, url, title, count in places
+        ],
+    )
+    # CAST, because binding bytes directly stores a BLOB and TEXT affinity does not
+    # convert one. A real snapshot has invalid UTF-8 in a genuine TEXT column, and
+    # only that reproduces the read failure being tested.
+    for pid, raw in (descriptions or {}).items():
+        conn.execute(
+            "UPDATE moz_places SET description = CAST(? AS TEXT) WHERE id = ?",
+            (raw, pid),
+        )
+
+    conn.executemany(
+        "INSERT INTO moz_historyvisits (id, place_id, visit_date, visit_type,"
+        " from_visit, session, source) VALUES (?, ?, ?, ?, ?, 0, 0)",
+        visits,
+    )
+    # last_visit_date is derived rather than asked of the caller, so a fixture
+    # cannot drift from what Firefox would store. `moz_places.id` is qualified
+    # because moz_historyvisits has an `id` too, and the inner scope would win:
+    # a bare `id` here silently compares v.place_id against v.id.
+    conn.execute(
+        "UPDATE moz_places SET last_visit_date = (SELECT max(v.visit_date)"
+        " FROM moz_historyvisits v WHERE v.place_id = moz_places.id)"
+    )
+    conn.executemany(
+        "INSERT INTO moz_places_metadata (place_id, created_at, updated_at,"
+        " total_view_time) VALUES (?, ?, ?, ?)",
+        metadata,
+    )
+    conn.executemany(
+        "INSERT INTO moz_bookmarks (id, parent, guid, title, type, dateAdded,"
+        f" lastModified) VALUES (?, ?, ?, ?, 2, {_US}, {_US})",
+        PLACES_ROOTS,
+    )
+    conn.executemany(
+        "INSERT INTO moz_bookmarks (id, type, parent, fk, guid, title, position,"
+        f" dateAdded, lastModified) VALUES (?, ?, ?, ?, ?, ?, 0, {_US}, {_US})",
+        bookmarks,
+    )
+    if downloads:
+        conn.executemany(
+            "INSERT INTO moz_anno_attributes (id, name) VALUES (?, ?)",
+            [(1, "downloads/destinationFileURI"), (2, "downloads/metaData")],
+        )
+        conn.executemany(
+            "INSERT INTO moz_annos (place_id, anno_attribute_id, content, dateAdded)"
+            " VALUES (?, 1, ?, ?)",
+            [(pid, dest, added) for pid, dest, _, added in downloads],
+        )
+        conn.executemany(
+            "INSERT INTO moz_annos (place_id, anno_attribute_id, content, dateAdded)"
+            " VALUES (?, 2, ?, ?)",
+            [(pid, meta, added) for pid, _, meta, added in downloads if meta],
+        )
+    conn.executemany(
+        "INSERT INTO moz_origins (prefix, host, frecency) VALUES (?, ?, ?)", origins
+    )
+    conn.executemany("INSERT INTO moz_inputhistory VALUES (?, ?, ?)", inputs)
+    conn.commit()
+    conn.close()
+
+    if not compress:
+        return path
+    with open(db, "rb") as src, lzma.open(path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    db.unlink()
+    return path
+
+
+@pytest.fixture
+def real_places_export() -> Path:
+    """A real Firefox snapshot, if `CPI_TEST_FIREFOX_EXPORT` points at one.
+
+    Same rule as the other real-export fixtures: assert only invariants that hold
+    for *any* snapshot. A count from one profile says nothing about the code and
+    leaks how much of what someone read.
+    """
+    env = os.environ.get("CPI_TEST_FIREFOX_EXPORT")
+    if not env:
+        pytest.skip("set CPI_TEST_FIREFOX_EXPORT to run against a real snapshot")
+    path = Path(env).expanduser()
+    if not path.exists():
+        pytest.fail(f"CPI_TEST_FIREFOX_EXPORT points at a missing file: {path}")
     return path
 
 
